@@ -51,7 +51,6 @@ class DebugIO(implicit val p: Parameters) extends Bundle {
   val clock = Input(Clock())
   val reset = Input(Reset())
   val clockeddmi = p(ExportDebug).dmi.option(Flipped(new ClockedDMIIO()))
-  val systemjtag = p(ExportDebug).jtag.option(new SystemJTAGIO)
   val apb = p(ExportDebug).apb.option(Flipped(new ClockedAPBBundle(APBBundleParameters(addrBits=12, dataBits=32))))
   //------------------------------
   val ndreset    = Output(Bool())
@@ -124,14 +123,8 @@ trait HasPeripheryDebug { this: BaseSubsystem =>
   val debug = InModuleBody { noPrefix(debugOpt.map { debugmod =>
     val debug = IO(new DebugIO)
 
-    require(!(debug.clockeddmi.isDefined && debug.systemjtag.isDefined),
-      "You cannot have both DMI and JTAG interface in HasPeripheryDebug")
-
     require(!(debug.clockeddmi.isDefined && debug.apb.isDefined),
       "You cannot have both DMI and APB interface in HasPeripheryDebug")
-
-    require(!(debug.systemjtag.isDefined && debug.apb.isDefined),
-      "You cannot have both APB and JTAG interface in HasPeripheryDebug")
 
     debug.clockeddmi.foreach { dbg => debugmod.module.io.dmi.get <> dbg }
 
@@ -159,29 +152,6 @@ trait HasPeripheryDebug { this: BaseSubsystem =>
     debug
   })}
 
-  val dtm = InModuleBody { debug.flatMap(_.systemjtag.map(instantiateJtagDTM(_))) }
-
-  def instantiateJtagDTM(sj: SystemJTAGIO): DebugTransportModuleJTAG = {
-
-    val dtm = Module(new DebugTransportModuleJTAG(p(DebugModuleKey).get.nDMIAddrSize, p(JtagDTMKey)))
-    dtm.io.jtag <> sj.jtag
-
-    debug.map(_.disableDebug.foreach { x => dtm.io.jtag.TMS := sj.jtag.TMS | x })  // force TMS high when debug is disabled
-
-    dtm.io.jtag_clock  := sj.jtag.TCK
-    dtm.io.jtag_reset  := sj.reset
-    dtm.io.jtag_mfr_id := sj.mfr_id
-    dtm.io.jtag_part_number := sj.part_number
-    dtm.io.jtag_version := sj.version
-    dtm.rf_reset := sj.reset
-
-    debugOpt.map { outerdebug =>
-      outerdebug.module.io.dmi.get.dmi <> dtm.io.dmi
-      outerdebug.module.io.dmi.get.dmiClock := sj.jtag.TCK
-      outerdebug.module.io.dmi.get.dmiReset := sj.reset
-    }
-    dtm
-  }
 }
 /** BlackBox to export DMI interface */
 class SimDTM(implicit p: Parameters) extends BlackBox with HasBlackBoxResource {
@@ -204,42 +174,6 @@ class SimDTM(implicit p: Parameters) extends BlackBox with HasBlackBoxResource {
   }
 
   addResource("/vsrc/SimDTM.v")
-  addResource("/csrc/SimDTM.cc")
-}
-/** BlackBox to export JTAG interface */
-class SimJTAG(tickDelay: Int = 50) extends BlackBox(Map("TICK_DELAY" -> IntParam(tickDelay)))
-  with HasBlackBoxResource {
-  val io = IO(new Bundle {
-    val clock = Input(Clock())
-    val reset = Input(Bool())
-    val jtag = new JTAGIO(hasTRSTn = true)
-    val enable = Input(Bool())
-    val init_done = Input(Bool())
-    val exit = Output(UInt(32.W))
-  })
-
-  def connect(dutio: JTAGIO, tbclock: Clock, tbreset: Bool, init_done: Bool, tbsuccess: Bool) = {
-    dutio.TCK := io.jtag.TCK
-    dutio.TMS := io.jtag.TMS
-    dutio.TDI := io.jtag.TDI
-    io.jtag.TDO := dutio.TDO
-
-    io.clock := tbclock
-    io.reset := tbreset
-
-    io.enable    := PlusArg("jtag_rbb_enable", 0, "Enable SimJTAG for JTAG Connections. Simulation will pause until connection is made.")
-    io.init_done := init_done
-
-    // Success is determined by the gdbserver
-    // which is controlling this simulation.
-    tbsuccess := io.exit === 1.U
-    assert(io.exit < 2.U, "*** FAILED *** (exit code = %d)\n", io.exit >> 1.U)
-  }
-
-  addResource("/vsrc/SimJTAG.v")
-  addResource("/csrc/SimJTAG.cc")
-  addResource("/csrc/remote_bitbang.h")
-  addResource("/csrc/remote_bitbang.cc")
 }
 
 object Debug {
@@ -260,13 +194,6 @@ object Debug {
       debug.clockeddmi.foreach { d =>
         val dtm = Module(new SimDTM).connect(c, r, d, out)
       }
-      debug.systemjtag.foreach { sj =>
-        val jtag = Module(new SimJTAG(tickDelay=3)).connect(sj.jtag, c, r, ~r, out)
-        sj.reset := r.asAsyncReset
-        sj.mfr_id := p(JtagDTMKey).idcodeManufId.U(11.W)
-        sj.part_number := p(JtagDTMKey).idcodePartNum.U(16.W)
-        sj.version := p(JtagDTMKey).idcodeVersion.U(4.W)
-      }
       debug.apb.foreach { apb =>
         require(false, "No support for connectDebug for an APB debug connection.")
       }
@@ -278,7 +205,6 @@ object Debug {
   def connectDebugClockAndReset(debugOpt: Option[DebugIO], c: Clock, sync: Boolean = true)(implicit p: Parameters): Unit = {
     debugOpt.foreach { debug =>
       val dmi_reset = debug.clockeddmi.map(_.dmiReset.asBool).getOrElse(false.B) |
-        debug.systemjtag.map(_.reset.asBool).getOrElse(false.B) |
         debug.apb.map(_.reset.asBool).getOrElse(false.B)
       connectDebugClockHelper(debug, dmi_reset, c, sync)
     }
@@ -312,17 +238,6 @@ object Debug {
     debugOpt.map { debug =>
       debug.clock := true.B.asClock
       debug.reset := (if (p(SubsystemResetSchemeKey)==ResetSynchronous) true.B else true.B.asAsyncReset)
-
-      debug.systemjtag.foreach { sj =>
-        sj.jtag.TCK := true.B.asClock
-        sj.jtag.TMS := true.B
-        sj.jtag.TDI := true.B
-        sj.jtag.TRSTn.foreach { r => r := true.B }
-        sj.reset := true.B.asAsyncReset
-        sj.mfr_id := 0.U
-        sj.part_number := 0.U
-        sj.version := 0.U
-      }
 
       debug.clockeddmi.foreach { d =>
         d.dmi.req.valid := false.B
