@@ -153,28 +153,6 @@ trait HasPeripheryDebug { this: BaseSubsystem =>
   })}
 
 }
-/** BlackBox to export DMI interface */
-class SimDTM(implicit p: Parameters) extends BlackBox with HasBlackBoxResource {
-  val io = IO(new Bundle {
-    val clk = Input(Clock())
-    val reset = Input(Bool())
-    val debug = new DMIIO
-    val exit = Output(UInt(32.W))
-  })
-
-  def connect(tbclk: Clock, tbreset: Bool, dutio: ClockedDMIIO, tbsuccess: Bool) = {
-    io.clk := tbclk
-    io.reset := tbreset
-    dutio.dmi <> io.debug
-    dutio.dmiClock := tbclk
-    dutio.dmiReset := tbreset
-
-    tbsuccess := io.exit === 1.U
-    assert(io.exit < 2.U, "*** FAILED *** (exit code = %d)\n", io.exit >> 1.U)
-  }
-
-  addResource("/vsrc/SimDTM.v")
-}
 
 object Debug {
   def connectDebug(
@@ -183,7 +161,7 @@ object Debug {
       psdio: PSDIO,
       c: Clock,
       r: Bool,
-      out: Bool,
+      harnessProxy: DMIIO,
       tckHalfPeriod: Int = 2,
       cmdDelay: Int = 2,
       psd: PSDTestMode = 0.U.asTypeOf(new PSDTestMode()))
@@ -192,7 +170,9 @@ object Debug {
     resetctrlOpt.map { rcio => rcio.hartIsInReset.map { _ := r }}
     debugOpt.map { debug =>
       debug.clockeddmi.foreach { d =>
-        val dtm = Module(new SimDTM).connect(c, r, d, out)
+        d.dmi <> harnessProxy
+        d.dmiClock := c 
+        d.dmiReset := r 
       }
       debug.apb.foreach { apb =>
         require(false, "No support for connectDebug for an APB debug connection.")
