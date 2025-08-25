@@ -264,6 +264,10 @@ trait Emulator extends Cross.Module2[String, String] {
         "remote_bitbang.cc",
       ).map(c => PathRef(csrcDir().path / c))
     }
+    
+    def rocketChipDriver = T {
+      T.ctx.env("ROCKET_CHIP_DRIVER") 
+    }
 
     def CMakeListsString = T {
       // format: off
@@ -274,6 +278,9 @@ trait Emulator extends Cross.Module2[String, String] {
          |include_directories(${generator.elaborate().path})
          |link_directories(${spikeRoot() + "/lib"})
          |include_directories(${spikeRoot() + "/include"})
+         |link_directories(${rocketChipDriver() + "/resources/cxx/riscv/lib"})
+         |include_directories(${rocketChipDriver() + "/resources/cxx/riscv/include"})
+         |include_directories(${rocketChipDriver() + "/resources/cxx/riscv-fesvr"})
          |
          |set(CMAKE_BUILD_TYPE Release)
          |set(CMAKE_CXX_STANDARD 17)

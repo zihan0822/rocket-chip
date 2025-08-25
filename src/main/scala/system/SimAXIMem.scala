@@ -46,7 +46,7 @@ object SimAXIMem {
 
   def connectMem(dut: CanHaveMasterAXI4MemPort)(implicit p: Parameters): Seq[SimAXIMem] = {
     dut.mem_axi4.zip(dut.memAXI4Node.in).map { case (io, (_, edge)) =>
-      val mem = LazyModule(new SimAXIMem(edge, base = p(ExtMem).get.master.base, size = p(ExtMem).get.master.size))
+      val mem = LazyModule(new SimAXIMem(edge, base = p(ExtMem).get.master.base, size = 40960))
       Module(mem.module).suggestName("mem")
       mem.io_axi4.head <> io
       mem
